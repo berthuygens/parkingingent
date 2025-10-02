@@ -47,6 +47,21 @@
     const API_URL = "https://gent.opendatasoft.com/api/records/1.0/search/?dataset=bezetting-parkeergarages-real-time&rows=200";
     const LOC_URL = "https://gent.opendatasoft.com/api/records/1.0/search/?dataset=locaties-openbare-parkings-gent&rows=200";
     let DATA = [];
+    // Pinned parkings appear on top in the list (case-insensitive contains)
+    const PINNED = [
+      "reep",
+      "interparking zuid",
+      "zuid" // in case dataset uses only 'Zuid'
+    ];
+    // Aliases to unify names across datasets (left: normalized search, right: canonical label)
+    const ALIASES = {
+      "zuid": "Interparking Zuid",
+      "interparking zuid": "Interparking Zuid",
+      "p3 zuid": "Interparking Zuid",
+      "parking zuid": "Interparking Zuid",
+      "reep": "Parking Reep",
+      "parking reep": "Parking Reep"
+    };
     let LOCS = {};
     async function fetchJSON(url) {
       const res = await fetch(url, { cache: "no-store" });
@@ -70,15 +85,25 @@
       return Math.max(0, Math.min(100, Math.round(100 * used / total)));
     }
     function normalizeName(n) {
+      if (!n) return "";
+      return n.toLowerCase()
+        .normalize('NFKD').replace(/[\u0300-\u036f]/g,'') // strip accents
+        .replace(/[^a-z0-9\s]/g,' ') // punctuation to space
+        .replace(/\s+/g,' ')
+        .trim();
+    }
       return (n || "").toLowerCase().replace(/\s+/g," ").trim();
     }
     function mergeRecords(bezetting, locaties) {
       const map = {};
       (locaties.records||[]).forEach(r => {
         const f = r.fields || {};
-        const name = normalizeName(f.naam || f.name || f.title);
+        const nameRaw = f.naam || f.name || f.title;
+        const name = normalizeName(nameRaw || "");
+        const canon = ALIASES[name] || (nameRaw || f.title || f.naam || "Onbekend");
         const id = f.id || f.objectid || f.park_id || name;
         map[name || id] = {
+          canon,
           lat: (r.geometry && r.geometry.coordinates && r.geometry.coordinates[1]) || f.lat || f.latitude,
           lon: (r.geometry && r.geometry.coordinates && r.geometry.coordinates[0]) || f.lon || f.longitude,
           capacity: f.capaciteit || f.capacity || f.plaatsen || null,
@@ -86,24 +111,47 @@
         };
       });
       LOCS = map;
+      const foundKeys = new Set();
       const out = (bezetting.records||[]).map(r => {
         const f = r.fields || {};
-        const name = f.parking_name || f.name || f.title || f.naam || f.description || "Onbekend";
-        const key = normalizeName(name);
-        const loc = map[key] || {};
+        const nameRaw = f.parking_name || f.name || f.title || f.naam || f.description || "Onbekend";
+        const key = normalizeName(nameRaw);
+        const aliasKey = normalizeName(ALIASES[key] || nameRaw);
+        const loc = map[aliasKey] || map[key] || {};
         const avail = f.availablecapacity ?? f.available_capacity ?? f.freecapacity ?? null;
         const total = f.totalcapacity ?? f.total_capacity ?? loc.capacity ?? null;
-        const status = (f.open ?? f.status ?? f.state ?? "").toString().toLowerCase();
-        const open = status.includes("open") || status === "true" || status === "1";
+        const statusVal = (f.open ?? f.status ?? f.state ?? "").toString().toLowerCase();
+        const open = statusVal.includes("open") || statusVal === "true" || statusVal === "1";
         const updated = f.lastupdate || f.last_updated || f.timestamp || r.record_timestamp;
+        const nameFinal = ALIASES[key] || nameRaw;
+        foundKeys.add(aliasKey || key);
         return {
-          name, avail, total, status: open ? "open" : (status.includes("closed") ? "closed" : (status || "")),
+          name: nameFinal, avail, total,
+          status: open ? "open" : (statusVal.includes("closed") ? "closed" : (statusVal || "")),
           updated, lat: loc.lat, lon: loc.lon, address: loc.address
         };
       });
+      // Add stubs for important locations missing in realtime data
+      Object.entries(map).forEach(([k, loc]) => {
+        if (!foundKeys.has(k)) {
+          // Only add if it's a pinned or aliased name we care about
+          const isPinned = PINNED.some(p => k.includes(normalizeName(p)) || normalizeName(loc.canon || '').includes(normalizeName(p)));
+          if (isPinned) {
+            out.push({
+              name: loc.canon || k,
+              avail: null,
+              total: loc.capacity ?? null,
+              status: "",
+              updated: null,
+              lat: loc.lat, lon: loc.lon, address: loc.address
+            });
+          }
+        }
+      });
       return out;
     }
-    function render(list) {
+
+function render(list) {
       const root = document.getElementById("list");
       root.innerHTML = "";
       list.forEach(it => {
@@ -147,7 +195,12 @@
       const onlyOpen = document.getElementById("onlyOpen").checked;
       const arr = DATA.filter(it => (!q || normalizeName(it.name).includes(q)) && (!onlyOpen || it.status === "open"));
       // Sort: most free spots first, then name
-      arr.sort((a,b)=> ((b.avail??-1) - (a.avail??-1)) || a.name.localeCompare(b.name));
+      arr.sort((a,b)=>{
+        const ap = PINNED.some(p => normalizeName(a.name).includes(normalizeName(p))) ? 1 : 0;
+        const bp = PINNED.some(p => normalizeName(b.name).includes(normalizeName(p))) ? 1 : 0;
+        if (ap !== bp) return bp - ap; // pinned first
+        return ((b.avail??-1) - (a.avail??-1)) || a.name.localeCompare(b.name);
+      });
       render(arr);
     }
     async function refresh() {
