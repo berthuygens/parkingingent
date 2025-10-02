@@ -38,9 +38,9 @@
     .row2 { display:flex; gap:14px; align-items:center; margin-top:6px; flex-wrap: wrap; }
     .pill { font-size: 12px; color: var(--muted); }
     .pill strong { color: var(--fg); }
-    .actions { display:flex; gap:10px; margin-top:10px; }
+    .actions { display:flex; gap:10px; margin-top:10px; flex-wrap: wrap; }
     .btn { appearance:none; border: 1px solid color-mix(in oklab, var(--fg) 20%, transparent); background: transparent; color: var(--fg);
-      border-radius: 10px; padding: 8px 12px; font-weight:600; }
+      border-radius: 10px; padding: 8px 12px; font-weight:600; text-decoration: none; display: inline-block; }
     footer { text-align:center; color: var(--muted); font-size: 12px; padding: 24px 12px 40px; }
     .hidden { display:none; }
   </style>
@@ -159,11 +159,18 @@
       return out;
     }
 
+    function isPinnedName(n) {
+      const nn = normalizeName(n);
+      return PINNED_MATCH.some(p => nn.includes(normalizeName(p)));
+    }
+
     function render(list) {
       const root = document.getElementById("list");
       root.innerHTML = "";
       list.forEach(it => {
         const percentage = pct(Number(it.avail ?? 0), Number(it.total ?? 0));
+        const nn = normalizeName(it.name);
+        const isZuid = (nn === 'interparking zuid' || nn === 'zuid');
         const card = document.createElement("div");
         card.className = "card";
         card.innerHTML = `
@@ -180,6 +187,7 @@
           <div class="actions">
             <button class="btn" data-action="maps">Open in Kaarten</button>
             <button class="btn" data-action="copy">Kopieer naam</button>
+            ${isZuid ? '<a class="btn" href="https://www.parkings.gent/parking/interparking-zuid" target="_blank" rel="noopener noreferrer">Officiële pagina</a>' : ''}
           </div>
         `;
         card.querySelector('[data-action="maps"]').addEventListener('click', () => {
@@ -197,11 +205,6 @@
         root.appendChild(card);
       });
       document.getElementById("count").textContent = list.length;
-    }
-
-    function isPinnedName(n) {
-      const nn = normalizeName(n);
-      return PINNED_MATCH.some(p => nn.includes(normalizeName(p)));
     }
 
     function searchAndFilter() {

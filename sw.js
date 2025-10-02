@@ -1,5 +1,5 @@
 // Simple offline-first service worker (cache the app shell)
-const CACHE = 'parking-gent-v3';
+const CACHE = 'parking-gent-v3.1';
 const ASSETS = [
   './',
   './index.html',
