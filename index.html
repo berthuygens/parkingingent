@@ -21,10 +21,10 @@
       background: color-mix(in oklab, var(--bg) 80%, transparent);
       display:flex; gap:10px; align-items:center; padding: calc(env(safe-area-inset-top) + 8px) var(--pad) 8px var(--pad); border-bottom: 1px solid color-mix(in oklab, var(--fg) 15%, transparent); }
     header h1 { font-size: 18px; margin: 0; font-weight: 700; letter-spacing: 0.2px; }
-    header .group { display:flex; gap:8px; align-items:center; }
+    header .group { display:flex; gap:8px; align-items:center; width:100%; }
     header button, header input { border:1px solid color-mix(in oklab, var(--fg) 15%, transparent); background: var(--card); color: var(--fg); border-radius: 999px; padding:8px 12px; }
     header input { flex:1; outline:none; }
-    header button { font-weight: 600; }
+    header button { font-weight: 600; white-space: nowrap; }
     #list { padding: 8px; display: grid; grid-template-columns: 1fr; gap: 10px; }
     .card { border-radius: var(--radius); background: var(--card); padding: 12px; border:1px solid color-mix(in oklab, var(--fg) 12%, transparent); }
     .row { display:flex; justify-content: space-between; align-items: baseline; gap: 10px; }
@@ -41,6 +41,8 @@
     .actions { display:flex; gap:10px; margin-top:10px; flex-wrap: wrap; }
     .btn { appearance:none; border: 1px solid color-mix(in oklab, var(--fg) 20%, transparent); background: transparent; color: var(--fg);
       border-radius: 10px; padding: 8px 12px; font-weight:600; text-decoration: none; display: inline-block; }
+    .fav { border:1px solid color-mix(in oklab, var(--fg) 25%, transparent); border-radius: 10px; padding: 6px 10px; font-weight:700; }
+    .fav.on { background: color-mix(in oklab, var(--accent) 20%, transparent); }
     footer { text-align:center; color: var(--muted); font-size: 12px; padding: 24px 12px 40px; }
     .hidden { display:none; }
   </style>
@@ -66,7 +68,8 @@
 
     let DATA = [];
     let LOCS = {};
-    let SHOW_ALL = false; // default: enkel Reep & Zuid
+    let SHOW_MODE = 'all'; // 'all' | 'favs'; first load shows all
+    const LS_KEY = 'parkinggent.favorites';
 
     function normalizeName(n) {
       if (!n) return "";
@@ -164,6 +167,24 @@
       return PINNED_MATCH.some(p => nn.includes(normalizeName(p)));
     }
 
+    function getFavorites() {
+      try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { return []; }
+    }
+    function setFavorites(arr) {
+      localStorage.setItem(LS_KEY, JSON.stringify(arr));
+    }
+    function toggleFavorite(name) {
+      const norm = normalizeName(name);
+      const favs = getFavorites();
+      const has = favs.includes(norm);
+      const next = has ? favs.filter(x => x !== norm) : [...new Set([...favs, norm])];
+      setFavorites(next);
+      searchAndFilter(); // re-render
+    }
+    function isFavorite(name) {
+      return getFavorites().includes(normalizeName(name));
+    }
+
     function render(list) {
       const root = document.getElementById("list");
       root.innerHTML = "";
@@ -171,12 +192,16 @@
         const percentage = pct(Number(it.avail ?? 0), Number(it.total ?? 0));
         const nn = normalizeName(it.name);
         const isZuid = (nn === 'interparking zuid' || nn === 'zuid');
+        const favOn = isFavorite(it.name);
         const card = document.createElement("div");
         card.className = "card";
         card.innerHTML = `
           <div class="row">
             <div class="name">${it.name}</div>
-            <div class="chip ${it.status==='open'?'open':(it.status==='closed'?'closed':'')}">${it.status || '—'}</div>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button class="fav ${favOn ? 'on' : ''}" data-action="fav">${favOn ? '★' : '☆'} Favoriet</button>
+              <div class="chip ${it.status==='open'?'open':(it.status==='closed'?'closed':'')}">${it.status || '—'}</div>
+            </div>
           </div>
           <div class="bar"><div class="fill" style="width:${percentage}%;"></div></div>
           <div class="row2">
@@ -202,6 +227,7 @@
         card.querySelector('[data-action="copy"]').addEventListener('click', async () => {
           try { await navigator.clipboard.writeText(it.name); alert("Gekopieerd!"); } catch(e){}
         });
+        card.querySelector('[data-action="fav"]').addEventListener('click', () => toggleFavorite(it.name));
         root.appendChild(card);
       });
       document.getElementById("count").textContent = list.length;
@@ -209,11 +235,11 @@
 
     function passesOpenFilter(item) {
       const nn = normalizeName(item.name);
-      // Pinned are always shown under Open filter
-      if (PINNED_MATCH.some(p => nn.includes(normalizeName(p)))) return True;
-      // Explicitly open
+      // pinned always pass
+      if (isPinnedName(item.name)) return true;
+      // explicit open
       if (item.status === 'open' || item.status === true || item.status === 1) return true;
-      // Unknown status but we have a numeric availability -> allow
+      // unknown but has numeric avail -> allow
       if ((!item.status || item.status === '') && (item.avail !== null && item.avail !== undefined)) return true;
       return false;
     }
@@ -223,19 +249,21 @@
       const onlyOpen = document.getElementById("onlyOpen").checked;
       let arr = DATA.filter(it => (!q || normalizeName(it.name).includes(q)) && (!onlyOpen || passesOpenFilter(it)));
 
-      if (!SHOW_ALL) {
-        // Keep only pinned
-        arr = arr.filter(it => isPinnedName(it.name));
+      if (SHOW_MODE === 'favs') {
+        const favs = new Set(getFavorites());
+        arr = arr.filter(it => favs.has(normalizeName(it.name)));
       }
 
-      // Sort: pinned first, then most free, then name
+      // Sort: Reep/Zuid pinned first, then by availability desc, then by name
       arr.sort((a,b)=>{
         const ap = isPinnedName(a.name) ? 1 : 0;
         const bp = isPinnedName(b.name) ? 1 : 0;
         if (ap !== bp) return bp - ap;
         return ((b.avail??-1) - (a.avail??-1)) || a.name.localeCompare(b.name);
       });
+
       render(arr);
+      updateModeButton();
     }
 
     async function refresh() {
@@ -252,9 +280,9 @@
       }
     }
 
-    function updateToggleButton() {
-      const btn = document.getElementById("toggleView");
-      btn.textContent = SHOW_ALL ? "Toon enkel Reep & Zuid" : "Toon alle parkings";
+    function updateModeButton() {
+      const btn = document.getElementById("toggleMode");
+      btn.textContent = (SHOW_MODE === 'favs') ? "Toon alle parkings" : "Toon favorieten";
     }
 
     window.addEventListener('load', async () => {
@@ -264,12 +292,11 @@
       document.getElementById("q").addEventListener('input', searchAndFilter);
       document.getElementById("onlyOpen").addEventListener('change', searchAndFilter);
       document.getElementById("btnRefresh").addEventListener('click', refresh);
-      document.getElementById("toggleView").addEventListener('click', ()=>{
-        SHOW_ALL = !SHOW_ALL;
-        updateToggleButton();
+      document.getElementById("toggleMode").addEventListener('click', ()=>{
+        SHOW_MODE = (SHOW_MODE === 'favs') ? 'all' : 'favs';
         searchAndFilter();
       });
-      updateToggleButton();
+      updateModeButton();
       await refresh();
       setInterval(refresh, 60000);
     });
@@ -278,17 +305,17 @@
 <body>
   <header>
     <h1>Parking Gent</h1>
-    <div class="group" style="flex:1; gap:8px;">
+    <div class="group">
       <input id="q" placeholder="Zoek…" inputmode="search" autocomplete="off" />
-      <label class="meta" title="Toon enkel parkings met status 'open'. Reep & Zuid blijven altijd zichtbaar."><input type="checkbox" id="onlyOpen" /> Open</label>
+      <label class="meta" title="Toon enkel parkings met status 'open'. Reep & Zuid blijven zichtbaar."><input type="checkbox" id="onlyOpen" /> Open</label>
       <button id="btnRefresh">Ververs</button>
-      <button id="toggleView">Toon alle parkings</button>
+      <button id="toggleMode">Toon favorieten</button>
     </div>
   </header>
   <div id="list" role="list"></div>
   <footer>
     <div class="meta">Status: <strong id="state">—</strong> • Laatste verversing: <span id="last">—</span> • <span id="count">0</span> items</div>
-    <div class="meta">Standaard zie je enkel <strong>Interparking Zuid</strong> en <strong>Parking Reep</strong>. Gebruik de knop om alle parkings te tonen.</div>
+    <div class="meta">Tip: klik op ★ Favoriet om parkings aan je favorieten toe te voegen en wissel dan met “Toon favorieten”.</div>
     <div class="meta">Bron: Stad Gent Open Data (realtime + locaties)</div>
   </footer>
 </body>
