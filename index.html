@@ -21,6 +21,7 @@
       background: color-mix(in oklab, var(--bg) 80%, transparent);
       display:flex; gap:10px; align-items:center; padding: calc(env(safe-area-inset-top) + 8px) var(--pad) 8px var(--pad); border-bottom: 1px solid color-mix(in oklab, var(--fg) 15%, transparent); }
     header h1 { font-size: 18px; margin: 0; font-weight: 700; letter-spacing: 0.2px; }
+    header .group { display:flex; gap:8px; align-items:center; }
     header button, header input { border:1px solid color-mix(in oklab, var(--fg) 15%, transparent); background: var(--card); color: var(--fg); border-radius: 999px; padding:8px 12px; }
     header input { flex:1; outline:none; }
     header button { font-weight: 600; }
@@ -47,14 +48,11 @@
     const API_URL = "https://gent.opendatasoft.com/api/records/1.0/search/?dataset=bezetting-parkeergarages-real-time&rows=200";
     const LOC_URL = "https://gent.opendatasoft.com/api/records/1.0/search/?dataset=locaties-openbare-parkings-gent&rows=200";
 
-    // Pinned and aliases
-    const PINNED = [
-      "interparking zuid",
-      "zuid",
-      "p3 zuid",
-      "parking zuid",
-      "reep",
-      "parking reep"
+    // Pinned & aliases
+    const PINNED_LABELS = ["Interparking Zuid", "Parking Reep"]; // canonical labels shown first
+    const PINNED_MATCH = [
+      "interparking zuid", "zuid", "p3 zuid", "parking zuid",
+      "reep", "parking reep"
     ];
     const ALIASES = {
       "zuid": "Interparking Zuid",
@@ -68,6 +66,7 @@
 
     let DATA = [];
     let LOCS = {};
+    let SHOW_ALL = false; // default: enkel Reep & Zuid
 
     function normalizeName(n) {
       if (!n) return "";
@@ -117,36 +116,35 @@
       });
       LOCS = map;
 
-      const found = new Set();
       const out = (bezetting.records||[]).map(r => {
         const f = r.fields || {};
         const nameRaw = f.parking_name || f.name || f.title || f.naam || f.description || "Onbekend";
         const key = normalizeName(nameRaw);
         const aliasCanon = ALIASES[key] || nameRaw;
-        // Try various lookup strategies
         const keyAlias = normalizeName(aliasCanon);
+        // Try to find location
         const loc = map[keyAlias] || map[key] ||
-                    Object.entries(map).find(([k]) => k.includes(keyAlias) || keyAlias.includes(k))?.[1] || {};
+          Object.entries(map).find(([k]) => k.includes(keyAlias) || keyAlias.includes(k))?.[1] || {};
         const avail = f.availablecapacity ?? f.available_capacity ?? f.freecapacity ?? null;
         const total = f.totalcapacity ?? f.total_capacity ?? loc.capacity ?? null;
         const statusVal = (f.open ?? f.status ?? f.state ?? "").toString().toLowerCase();
         const open = statusVal.includes("open") || statusVal === "true" || statusVal === "1";
         const updated = f.lastupdate || f.last_updated || f.timestamp || r.record_timestamp;
-        const nameFinal = aliasCanon;
-        found.add(keyAlias);
         return {
-          name: nameFinal, avail, total,
+          name: aliasCanon,
+          avail, total,
           status: open ? "open" : (statusVal.includes("closed") ? "closed" : (statusVal || "")),
-          updated, lat: loc.lat, lon: loc.lon, address: loc.address
+          updated,
+          lat: loc.lat, lon: loc.lon, address: loc.address
         };
       });
 
       // Ensure pinned entries exist even if realtime didn't return them
-      ["Interparking Zuid","Parking Reep"].forEach(label => {
+      PINNED_LABELS.forEach(label => {
         const k = normalizeName(label);
-        const already = out.some(d => normalizeName(d.name) === k);
-        if (!already) {
-          const loc = map[k] || Object.entries(map).find(([kk,v]) => kk.includes(k))?.[1] || {};
+        const exists = out.some(d => normalizeName(d.name) == k);
+        if (!exists) {
+          const loc = map[k] || Object.entries(map).find(([kk]) => kk.includes(k))?.[1] || {};
           out.push({
             name: label,
             avail: null,
@@ -201,14 +199,25 @@
       document.getElementById("count").textContent = list.length;
     }
 
+    function isPinnedName(n) {
+      const nn = normalizeName(n);
+      return PINNED_MATCH.some(p => nn.includes(normalizeName(p)));
+    }
+
     function searchAndFilter() {
       const q = normalizeName(document.getElementById("q").value);
       const onlyOpen = document.getElementById("onlyOpen").checked;
-      const arr = DATA.filter(it => (!q || normalizeName(it.name).includes(q)) && (!onlyOpen || it.status === "open"));
+      let arr = DATA.filter(it => (!q || normalizeName(it.name).includes(q)) && (!onlyOpen || it.status === "open"));
+
+      if (!SHOW_ALL) {
+        // Keep only pinned
+        arr = arr.filter(it => isPinnedName(it.name));
+      }
+
       // Sort: pinned first, then most free, then name
       arr.sort((a,b)=>{
-        const ap = PINNED.some(p => normalizeName(a.name).includes(normalizeName(p))) ? 1 : 0;
-        const bp = PINNED.some(p => normalizeName(b.name).includes(normalizeName(p))) ? 1 : 0;
+        const ap = isPinnedName(a.name) ? 1 : 0;
+        const bp = isPinnedName(b.name) ? 1 : 0;
         if (ap !== bp) return bp - ap;
         return ((b.avail??-1) - (a.avail??-1)) || a.name.localeCompare(b.name);
       });
@@ -229,6 +238,11 @@
       }
     }
 
+    function updateToggleButton() {
+      const btn = document.getElementById("toggleView");
+      btn.textContent = SHOW_ALL ? "Toon enkel Reep & Zuid" : "Toon alle parkings";
+    }
+
     window.addEventListener('load', async () => {
       if ('serviceWorker' in navigator) {
         try { navigator.serviceWorker.register('./sw.js'); } catch(e){}
@@ -236,6 +250,12 @@
       document.getElementById("q").addEventListener('input', searchAndFilter);
       document.getElementById("onlyOpen").addEventListener('change', searchAndFilter);
       document.getElementById("btnRefresh").addEventListener('click', refresh);
+      document.getElementById("toggleView").addEventListener('click', ()=>{
+        SHOW_ALL = !SHOW_ALL;
+        updateToggleButton();
+        searchAndFilter();
+      });
+      updateToggleButton();
       await refresh();
       setInterval(refresh, 60000);
     });
@@ -244,14 +264,18 @@
 <body>
   <header>
     <h1>Parking Gent</h1>
-    <input id="q" placeholder="Zoek parking…" inputmode="search" autocomplete="off" />
-    <label class="meta"><input type="checkbox" id="onlyOpen" /> Open</label>
-    <button id="btnRefresh">Ververs</button>
+    <div class="group" style="flex:1; gap:8px;">
+      <input id="q" placeholder="Zoek…" inputmode="search" autocomplete="off" />
+      <label class="meta"><input type="checkbox" id="onlyOpen" /> Open</label>
+      <button id="btnRefresh">Ververs</button>
+      <button id="toggleView">Toon alle parkings</button>
+    </div>
   </header>
   <div id="list" role="list"></div>
   <footer>
     <div class="meta">Status: <strong id="state">—</strong> • Laatste verversing: <span id="last">—</span> • <span id="count">0</span> items</div>
-    <div class="meta">Bron: Stad Gent Open Data (realtime, elke minuut geüpdatet)</div>
+    <div class="meta">Standaard zie je enkel <strong>Interparking Zuid</strong> en <strong>Parking Reep</strong>. Gebruik de knop om alle parkings te tonen.</div>
+    <div class="meta">Bron: Stad Gent Open Data (realtime + locaties)</div>
   </footer>
 </body>
 </html>
