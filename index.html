@@ -207,10 +207,21 @@
       document.getElementById("count").textContent = list.length;
     }
 
+    function passesOpenFilter(item) {
+      const nn = normalizeName(item.name);
+      // Pinned are always shown under Open filter
+      if (PINNED_MATCH.some(p => nn.includes(normalizeName(p)))) return True;
+      // Explicitly open
+      if (item.status === 'open' || item.status === true || item.status === 1) return true;
+      // Unknown status but we have a numeric availability -> allow
+      if ((!item.status || item.status === '') && (item.avail !== null && item.avail !== undefined)) return true;
+      return false;
+    }
+
     function searchAndFilter() {
       const q = normalizeName(document.getElementById("q").value);
       const onlyOpen = document.getElementById("onlyOpen").checked;
-      let arr = DATA.filter(it => (!q || normalizeName(it.name).includes(q)) && (!onlyOpen || it.status === "open"));
+      let arr = DATA.filter(it => (!q || normalizeName(it.name).includes(q)) && (!onlyOpen || passesOpenFilter(it)));
 
       if (!SHOW_ALL) {
         // Keep only pinned
@@ -269,7 +280,7 @@
     <h1>Parking Gent</h1>
     <div class="group" style="flex:1; gap:8px;">
       <input id="q" placeholder="Zoek…" inputmode="search" autocomplete="off" />
-      <label class="meta"><input type="checkbox" id="onlyOpen" /> Open</label>
+      <label class="meta" title="Toon enkel parkings met status 'open'. Reep & Zuid blijven altijd zichtbaar."><input type="checkbox" id="onlyOpen" /> Open</label>
       <button id="btnRefresh">Ververs</button>
       <button id="toggleView">Toon alle parkings</button>
     </div>
