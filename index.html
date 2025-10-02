@@ -29,7 +29,7 @@
     .row { display:flex; justify-content: space-between; align-items: baseline; gap: 10px; }
     .name { font-weight: 700; font-size: 16px; }
     .meta { color: var(--muted); font-size: 12px; }
-    .chip { padding: 2px 8px; border-radius: 999px; font-size: 12px; border:1px solid color-mix(in oklab, var(--fg) 20%, transparent); }
+    .chip { padding: 2px 8px; border-radius: 999px; font-size: 12px; border:1px solid color-mix(in oklab, var(--fg) 20%, transparent); text-transform: capitalize; }
     .chip.open { background: color-mix(in oklab, var(--ok) 15%, transparent); }
     .chip.closed { background: color-mix(in oklab, var(--bad) 15%, transparent); }
     .bar { height: 7px; border-radius: 999px; background: color-mix(in oklab, var(--fg) 10%, transparent); overflow: hidden; margin-top: 8px; }
@@ -46,23 +46,37 @@
   <script>
     const API_URL = "https://gent.opendatasoft.com/api/records/1.0/search/?dataset=bezetting-parkeergarages-real-time&rows=200";
     const LOC_URL = "https://gent.opendatasoft.com/api/records/1.0/search/?dataset=locaties-openbare-parkings-gent&rows=200";
-    let DATA = [];
-    // Pinned parkings appear on top in the list (case-insensitive contains)
+
+    // Pinned and aliases
     const PINNED = [
-      "reep",
       "interparking zuid",
-      "zuid" // in case dataset uses only 'Zuid'
+      "zuid",
+      "p3 zuid",
+      "parking zuid",
+      "reep",
+      "parking reep"
     ];
-    // Aliases to unify names across datasets (left: normalized search, right: canonical label)
     const ALIASES = {
       "zuid": "Interparking Zuid",
+      "gent zuid": "Interparking Zuid",
       "interparking zuid": "Interparking Zuid",
       "p3 zuid": "Interparking Zuid",
       "parking zuid": "Interparking Zuid",
       "reep": "Parking Reep",
       "parking reep": "Parking Reep"
     };
+
+    let DATA = [];
     let LOCS = {};
+
+    function normalizeName(n) {
+      if (!n) return "";
+      return n.toLowerCase()
+        .normalize('NFKD').replace(/[\u0300-\u036f]/g,'')
+        .replace(/[^a-z0-9\s]/g,' ')
+        .replace(/\s+/g,' ')
+        .trim();
+    }
     async function fetchJSON(url) {
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) throw new Error("Netwerkfout " + res.status);
@@ -84,25 +98,16 @@
       const used = total - avail;
       return Math.max(0, Math.min(100, Math.round(100 * used / total)));
     }
-    function normalizeName(n) {
-      if (!n) return "";
-      return n.toLowerCase()
-        .normalize('NFKD').replace(/[\u0300-\u036f]/g,'') // strip accents
-        .replace(/[^a-z0-9\s]/g,' ') // punctuation to space
-        .replace(/\s+/g,' ')
-        .trim();
-    }
-      return (n || "").toLowerCase().replace(/\s+/g," ").trim();
-    }
+
     function mergeRecords(bezetting, locaties) {
+      // Build locations map
       const map = {};
       (locaties.records||[]).forEach(r => {
         const f = r.fields || {};
         const nameRaw = f.naam || f.name || f.title;
-        const name = normalizeName(nameRaw || "");
-        const canon = ALIASES[name] || (nameRaw || f.title || f.naam || "Onbekend");
-        const id = f.id || f.objectid || f.park_id || name;
-        map[name || id] = {
+        const key = normalizeName(nameRaw || "");
+        const canon = ALIASES[key] || (nameRaw || "Onbekend");
+        map[key] = {
           canon,
           lat: (r.geometry && r.geometry.coordinates && r.geometry.coordinates[1]) || f.lat || f.latitude,
           lon: (r.geometry && r.geometry.coordinates && r.geometry.coordinates[0]) || f.lon || f.longitude,
@@ -111,47 +116,52 @@
         };
       });
       LOCS = map;
-      const foundKeys = new Set();
+
+      const found = new Set();
       const out = (bezetting.records||[]).map(r => {
         const f = r.fields || {};
         const nameRaw = f.parking_name || f.name || f.title || f.naam || f.description || "Onbekend";
         const key = normalizeName(nameRaw);
-        const aliasKey = normalizeName(ALIASES[key] || nameRaw);
-        const loc = map[aliasKey] || map[key] || {};
+        const aliasCanon = ALIASES[key] || nameRaw;
+        // Try various lookup strategies
+        const keyAlias = normalizeName(aliasCanon);
+        const loc = map[keyAlias] || map[key] ||
+                    Object.entries(map).find(([k]) => k.includes(keyAlias) || keyAlias.includes(k))?.[1] || {};
         const avail = f.availablecapacity ?? f.available_capacity ?? f.freecapacity ?? null;
         const total = f.totalcapacity ?? f.total_capacity ?? loc.capacity ?? null;
         const statusVal = (f.open ?? f.status ?? f.state ?? "").toString().toLowerCase();
         const open = statusVal.includes("open") || statusVal === "true" || statusVal === "1";
         const updated = f.lastupdate || f.last_updated || f.timestamp || r.record_timestamp;
-        const nameFinal = ALIASES[key] || nameRaw;
-        foundKeys.add(aliasKey || key);
+        const nameFinal = aliasCanon;
+        found.add(keyAlias);
         return {
           name: nameFinal, avail, total,
           status: open ? "open" : (statusVal.includes("closed") ? "closed" : (statusVal || "")),
           updated, lat: loc.lat, lon: loc.lon, address: loc.address
         };
       });
-      // Add stubs for important locations missing in realtime data
-      Object.entries(map).forEach(([k, loc]) => {
-        if (!foundKeys.has(k)) {
-          // Only add if it's a pinned or aliased name we care about
-          const isPinned = PINNED.some(p => k.includes(normalizeName(p)) || normalizeName(loc.canon || '').includes(normalizeName(p)));
-          if (isPinned) {
-            out.push({
-              name: loc.canon || k,
-              avail: null,
-              total: loc.capacity ?? null,
-              status: "",
-              updated: null,
-              lat: loc.lat, lon: loc.lon, address: loc.address
-            });
-          }
+
+      // Ensure pinned entries exist even if realtime didn't return them
+      ["Interparking Zuid","Parking Reep"].forEach(label => {
+        const k = normalizeName(label);
+        const already = out.some(d => normalizeName(d.name) === k);
+        if (!already) {
+          const loc = map[k] || Object.entries(map).find(([kk,v]) => kk.includes(k))?.[1] || {};
+          out.push({
+            name: label,
+            avail: null,
+            total: loc.capacity ?? null,
+            status: "",
+            updated: null,
+            lat: loc.lat, lon: loc.lon, address: loc.address
+          });
         }
       });
+
       return out;
     }
 
-function render(list) {
+    function render(list) {
       const root = document.getElementById("list");
       root.innerHTML = "";
       list.forEach(it => {
@@ -190,19 +200,21 @@ function render(list) {
       });
       document.getElementById("count").textContent = list.length;
     }
+
     function searchAndFilter() {
       const q = normalizeName(document.getElementById("q").value);
       const onlyOpen = document.getElementById("onlyOpen").checked;
       const arr = DATA.filter(it => (!q || normalizeName(it.name).includes(q)) && (!onlyOpen || it.status === "open"));
-      // Sort: most free spots first, then name
+      // Sort: pinned first, then most free, then name
       arr.sort((a,b)=>{
         const ap = PINNED.some(p => normalizeName(a.name).includes(normalizeName(p))) ? 1 : 0;
         const bp = PINNED.some(p => normalizeName(b.name).includes(normalizeName(p))) ? 1 : 0;
-        if (ap !== bp) return bp - ap; // pinned first
+        if (ap !== bp) return bp - ap;
         return ((b.avail??-1) - (a.avail??-1)) || a.name.localeCompare(b.name);
       });
       render(arr);
     }
+
     async function refresh() {
       try {
         document.getElementById("state").textContent = "Bezig met verversen…";
@@ -216,6 +228,7 @@ function render(list) {
         console.error(e);
       }
     }
+
     window.addEventListener('load', async () => {
       if ('serviceWorker' in navigator) {
         try { navigator.serviceWorker.register('./sw.js'); } catch(e){}
@@ -224,7 +237,7 @@ function render(list) {
       document.getElementById("onlyOpen").addEventListener('change', searchAndFilter);
       document.getElementById("btnRefresh").addEventListener('click', refresh);
       await refresh();
-      setInterval(refresh, 60000); // iedere minuut
+      setInterval(refresh, 60000);
     });
   </script>
 </head>

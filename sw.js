@@ -1,5 +1,5 @@
 // Simple offline-first service worker (cache the app shell)
-const CACHE = 'parking-gent-v1';
+const CACHE = 'parking-gent-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -15,7 +15,6 @@ self.addEventListener('activate', (e)=>{
 });
 self.addEventListener('fetch', (e)=>{
   const url = new URL(e.request.url);
-  // network-first for API, cache-first for app shell
   if (url.hostname.includes('opendatasoft.com')) {
     e.respondWith(fetch(e.request).catch(()=>caches.match(e.request)));
   } else {
